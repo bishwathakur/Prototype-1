@@ -1,6 +1,9 @@
 # AXIS Prototype
 Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 
+## 📚 Documentation
+- [Solution Proposal](axis-prototype/docs/proposal-1-travel-disruption-concierge.md)
+
 ## Prototype Flow (What happens under the hood?)
 
 When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time (under 3 seconds):
