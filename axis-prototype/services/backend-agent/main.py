@@ -53,6 +53,10 @@ def startup_event():
     t = threading.Thread(target=kafka_consumer_task, daemon=True)
     t.start()
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 @app.get("/api/itinerary/{cm_id}")
 def get_itin(cm_id: str):
     return get_itinerary(cm_id)
