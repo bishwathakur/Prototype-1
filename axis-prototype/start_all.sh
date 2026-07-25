@@ -31,6 +31,11 @@ cd ../..
 echo "[4/4] Starting React Frontend..."
 cd frontend
 npm install --silent
+# Dynamically pass the Codespaces forwarded URL for port 8000 to the Vite frontend
+if [ -n "$CODESPACE_NAME" ]; then
+  export VITE_API_URL="https://${CODESPACE_NAME}-8000.app.github.dev"
+  echo "Codespaces detected. Setting VITE_API_URL=$VITE_API_URL"
+fi
 npm run dev > frontend.log 2>&1 &
 FRONTEND_PID=$!
 cd ..
