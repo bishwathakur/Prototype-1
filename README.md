@@ -5,6 +5,49 @@ Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 
 When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time (under 3 seconds):
 
+```mermaid
+sequenceDiagram
+    participant P as producer.py
+    participant K1 as Kafka (flight-status-raw)
+    participant D as detector.py
+    participant K2 as Kafka (disruption-confirmed)
+    participant B as Backend (main.py)
+    participant DB as PostgreSQL
+    participant A as Agent (agent.py)
+    participant UI as React UI
+
+    Note over UI,B: 1. Steady State (Polling)
+    loop Every 2 seconds
+        UI->>B: GET /api/itinerary/CM-123
+        B->>DB: SELECT * FROM itineraries
+        DB-->>B: status="ON_TIME"
+        B-->>UI: {status: "ON_TIME"} (UI turns Green)
+    end
+
+    Note over P,K1: 2. Disruption Injection
+    P->>K1: Publish {"status": "CANCELLED"}
+    
+    Note over D,K2: 3. Detection
+    K1-->>D: Consume raw event
+    D->>D: Filter cancelled/delayed
+    D->>K2: Publish confirmed disruption
+
+    Note over B,A: 4. Agent Handoff
+    K2-->>B: Consume confirmed disruption
+    B->>DB: UPDATE status="CANCELLED"
+    Note over UI,B: UI Polling returns "CANCELLED" (UI turns Red)
+    B->>A: Trigger Rebooking Agent
+    
+    Note over A,DB: 5. Autonomous Rebooking
+    A->>A: Evaluate alternatives
+    A->>A: Check policy (price < $500)
+    A->>DB: UPDATE status="REBOOKED", new_flight="DL200"
+
+    Note over UI,B: 6. Resolution
+    UI->>B: GET /api/itinerary/CM-123
+    B-->>UI: {status: "REBOOKED", new_flight: "DL200"} (UI turns Gold)
+```
+
 1. **Steady State:** The React Frontend (Vite) continuously polls the FastAPI Backend. The PostgreSQL database shows flight `AX100` as `ON_TIME`. The UI is **Green**.
 2. **Disruption Injection:** Running `make trigger` executes `producer.py`. It pushes a mock flight cancellation JSON payload to the Kafka topic `flight-status-raw`.
 3. **Detection:** The `detector.py` service consumes the raw stream. It detects `status="CANCELLED"`, filters it, and publishes a confirmed event to the Kafka topic `disruption-confirmed`.
