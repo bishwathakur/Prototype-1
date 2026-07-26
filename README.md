@@ -1,10 +1,49 @@
 # AXIS Prototype
 Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 
-## 📚 Documentation
-- [Solution Proposal](axis-prototype/docs/proposal-1-travel-disruption-concierge.md)
+## 🏗️ System Architecture
 
-## Prototype Flow (What happens under the hood?)
+```mermaid
+flowchart TD
+    %% Infrastructure
+    subgraph Infra[Infrastructure - Docker Compose]
+        ZK[Zookeeper:2181]
+        KF[Kafka:9092]
+        PG[PostgreSQL:5432]
+        RD[Redis:6379]
+    end
+
+    %% Services
+    subgraph Services[Microservices]
+        P[producer.py<br/>Event Producer]
+        D[detector.py<br/>Disruption Detector]
+        B[main.py<br/>FastAPI Backend]
+        A[agent.py<br/>Mock LangChain Agent]
+    end
+
+    %% Frontend
+    F[React + Vite<br/>Port 5173]
+
+    %% Data Flow
+    P -->|1. flight-status-raw| KF
+    KF -->|2. Consume raw| D
+    D -->|3. disruption-confirmed| KF
+    KF -.->|4. Consume confirmed| B
+    B -->|5. DB Ops| PG
+    B <-->|6. Agent Logic| A
+    A -->|7. Rebooking| PG
+    F -.->|8. Poll 2s| B
+
+    %% Styling
+    classDef infra fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef svc fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef fe fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+    class ZK,KF,PG,RD infra;
+    class P,D,B,A svc;
+    class F fe;
+```
+
+## 🔄 Prototype Flow (What happens under the hood?)
 
 When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time (under 3 seconds):
 
@@ -60,6 +99,43 @@ sequenceDiagram
    - Checks the cardmember's policy rules (limit < $500).
    - Books `DL200`, updating the database itinerary to `REBOOKED`.
 6. **Resolution:** The React UI fetches the updated state and transitions to **Gold**, notifying the user of the resolved flight without any manual intervention.
+
+---
+
+## 📁 Project Structure
+
+```
+axis-prototype/
+├── docker-compose.yml          # Kafka, Zookeeper, PostgreSQL, Redis
+├── Makefile                    # Unified commands (up, trigger, down)
+├── start_all.sh / .ps1         # One-command startup (Linux/Windows)
+├── trigger_disruption.sh / .ps1 # Trigger disruption event
+├── services/
+│   ├── event-producer/
+│   │   ├── producer.py         # Mocks live flight data → Kafka
+│   │   └── requirements.txt
+│   ├── disruption-detector/
+│   │   ├── detector.py         # Filters raw stream → confirmed disruptions
+│   │   └── requirements.txt
+│   └── backend-agent/
+│       ├── main.py             # FastAPI + Kafka consumer + REST API
+│       ├── agent.py            # Deterministic mock LangChain agent
+│       ├── database.py         # PostgreSQL connection & schema
+│       └── requirements.txt
+└── frontend/
+    ├── package.json
+    ├── vite.config.js
+    ├── tailwind.config.js
+    └── src/
+        ├── App.jsx             # Polls API, renders status card
+        ├── main.jsx
+        └── index.css
+```
+
+---
+
+## 📚 Documentation
+- [Solution Proposal](axis-prototype/docs/proposal-1-travel-disruption-concierge.md)
 
 ---
 
