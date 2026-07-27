@@ -14,9 +14,10 @@
 | 2 | FastAPI backend auto-creates DB table & seeds AX100 | ✅ | `services/backend-agent/database.py:init_db()` + `main.py:startup_event()` |
 | 3 | React frontend shows "Flight AX100 is On Time" initially | ✅ | `frontend/src/App.jsx` polls `/api/itinerary/CM-123`, Green state |
 | 4 | `python producer.py` pushes cancelled event | ✅ | `services/event-producer/producer.py` emits to `flight-status-raw` after 10s |
-| 5 | Within 5s: detector logs → agent runs → UI shows "Rebooked on DL200" | ✅ | Full flow: producer→detector→Kafka→backend→agent→DB→UI poll |
-| 6 | **Zero external API keys** (OpenAI, Amadeus, etc.) | ✅ | All mocked: deterministic agent, fake flight data, local Kafka/Postgres |
-| 7 | Self-contained with `requirements.txt` + `package.json` | ✅ | Every service has requirements; frontend has package.json |
+| 5 | Within 5s: detector logs → gate passes → backend logs → agent runs → UI shows "Rebooked on DL200" | ✅ | Full flow: producer→detector→gate→Kafka→backend→agent→DB→UI poll |
+| 6 | Ineligible disruption: gate rejects → UI shows Gray card with reason | ✅ | Gate emits to `disruption-ineligible`, backend sets `INELIGIBLE` status |
+| 7 | **Zero external API keys** (OpenAI, Amadeus, etc.) | ✅ | All mocked: deterministic agent, fake flight data, local Kafka/Postgres |
+| 8 | Self-contained with `requirements.txt` + `package.json` | ✅ | Every service has requirements; frontend has package.json |
 
 ---
 
@@ -24,11 +25,12 @@
 
 | Task | Implementation |
 |------|----------------|
-| **Monitor live flight data & detect disruptions** | `detector.py` consumes `flight-status-raw`, filters CANCELLED/delay>90min → `disruption-confirmed` |
+| **Monitor live flight data & detect disruptions** | `detector.py` consumes `flight-status-raw`, filters CANCELLED/delay>90min, classifies cause → `disruption-detected` |
+| **Insurance eligibility gate** | `gate.py`: covered cause check + delay policy + claim count → `disruption-confirmed` or `disruption-ineligible` |
 | **Autonomous rebooking logic with policy** | `agent.py`: search alternatives → check policy ($500 limit) → book DL200 → update DB |
-| **Card member interface** | React + Vite + Tailwind: 3-state UI (Green/Red/Gold), polls every 2s |
+| **Card member interface** | React + Vite + Tailwind: 4-state UI (Green/Red/Gold/Gray), polls every 2s |
 | **Integrate airline/hotel/notification APIs** | **Mocked** for prototype: `search_alternative_flights()`, `check_policy()`, `rebook_itinerary()` — ready for real API swap |
-| **Test & optimize** | End-to-end verified: Green → Red → Gold in <3s |
+| **Test & optimize** | End-to-end verified: Green → Red/Gray → Gold in <3s |
 
 ---
 
@@ -94,9 +96,9 @@ Total time: approximately 2 minutes 30 seconds.
 | 2 | **Problem** | Manual rebooking = high effort, low benefit use, brand damage |
 | 3 | **Solution** | AXIS detects → evaluates → rebooks → notifies in <3 min |
 | 4 | **Architecture** | Mermaid flowchart from README |
-| 5 | **Detection Pipeline** | Kafka + Detector: CANCELLED / delay>90min |
+| 5 | **Insurance Eligibility Gate** | Kafka + Python: cause check → policy check → claim history check |
 | 6 | **Autonomous Agent** | Search → Policy ($500) → Book DL200 |
-| 7 | **Card Member UI** | 3-state React: Green/Red/Gold |
+| 7 | **Card Member UI** | 4-state React: Green/Red/Gold/Gray |
 | 8 | **Tech Stack** | Kafka, FastAPI, React, Postgres, Docker |
 | 9 | **Demo** | Link to video + live Codespaces URL |
 | 10 | **Next Steps** | Real Amadeus APIs, Hotel rebooking, Push notifications |

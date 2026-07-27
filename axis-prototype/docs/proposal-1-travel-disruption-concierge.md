@@ -72,7 +72,7 @@ This means the card member receives benefit activation automatically. The card m
 
 ### 3.1 Component Overview
 
-The system has four components. Each component has a single responsibility.
+The system has five components. Each component has a single responsibility.
 
 ```
 [Flight Data Sources]
@@ -81,13 +81,16 @@ The system has four components. Each component has a single responsibility.
 [Component 1: Disruption Detection Pipeline]
         |
         v
-[Component 2: Autonomous Rebooking Agent]
+[Component 2: Insurance Eligibility Gate]
         |
         v
-[Component 3: Card Policy Engine]
+[Component 3: Autonomous Rebooking Agent]
         |
         v
-[Component 4: Card Member Notification + UI]
+[Component 4: Card Policy Engine]
+        |
+        v
+[Component 5: Card Member Notification + UI]
 ```
 
 ### 3.2 Component 1 — Disruption Detection Pipeline
@@ -105,15 +108,51 @@ This component ingests live flight status data. It processes the data as a conti
    - Rule A: Flight status changes to `CANCELLED`.
    - Rule B: Flight departure delay exceeds 90 minutes.
    - Rule C: Calculated connection time after delay is less than the minimum connection time for the destination airport.
-3. Emit confirmed disruption events to a Kafka topic named `disruption-confirmed`.
+3. Classify the cause of the disruption using carrier-reported reason codes where available. Fall back to a heuristic for unreported causes. Valid cause categories: WEATHER, CARRIER_EQUIPMENT, SECURITY, HIJACKING, DOCUMENTATION, OTHER.
+4. Emit classified disruption events to a Kafka topic named `disruption-detected`.
 
-**Output:** A structured disruption event containing: card member ID, affected flight number, disruption type, affected hotel reservation ID (if applicable), and UTC timestamp.
+**Output:** A structured disruption event containing: card member ID, affected flight number, disruption type, classified cause, delay duration in minutes, and UTC timestamp.
 
 **Why Kafka and Flink:**
 
 Kafka provides durable, ordered, replayable event storage. Flink provides stateful stream processing with exactly-once semantics. This combination ensures that no disruption event is missed and no card member is notified twice.
 
-### 3.3 Component 2 — Autonomous Rebooking Agent
+### 3.3 Component 2 — Insurance Eligibility Gate
+
+**Technology:** Python, Kafka Streams
+
+**Function:**
+
+This component sits between the detection pipeline and the rebooking agent. It prevents rebooking for disruptions that do not qualify for insurance coverage.
+
+Rebooking without eligibility confirmation would create two problems:
+- The card member receives a rebooked flight but the insurance claim is rejected.
+- The card member must pay for the replacement flight out of pocket.
+
+The gate eliminates this gap. If cause, delay, or claim history does not meet the insurance requirements, the gate rejects the disruption before the rebooking agent acts.
+
+**Steps the component performs:**
+
+1. Consume the classified disruption event from the `disruption-detected` Kafka topic.
+2. **Check 1 — Covered cause:** Verify that the disruption cause is in the approved list (WEATHER, CARRIER_EQUIPMENT, HIJACKING, DOCUMENTATION). If not covered, emit to `disruption-ineligible` with a clear reason and stop.
+3. **Check 2 — Within policy:** Verify that:
+   - The delay exceeds 6 hours (360 minutes). This threshold is independent of the 90-minute detection trigger.
+   - The card member has filed fewer than 2 claims in the last 12 months.
+   If either check fails, emit to `disruption-ineligible` with the specific reason and stop.
+4. **Check 3 — Eligible reimbursement:** Confirm that the disruption passes both checks above.
+5. On pass: Emit to `disruption-confirmed`.
+6. On fail: Emit to `disruption-ineligible` with the failing reason.
+
+**Audit trail:** Every gate decision is written to the `eligibility_checks` database table. This provides a full audit log and enables the UI to display rejection explanations.
+
+**Why this is a separate component:**
+
+The gate is not inline in the agent because:
+- The gate must operate on every disruption, including those the agent never sees.
+- The agent assumes anything it receives has passed the gate and can proceed to rebooking without re-checking eligibility.
+- The gate can be scaled independently of the agent when throughput increases.
+
+### 3.4 Component 3 — Autonomous Rebooking Agent
 
 **Technology:** LangChain (Python), Amadeus Flight Offers API, hotel partner APIs
 
@@ -123,7 +162,7 @@ This component receives the disruption event and executes the rebooking autonomo
 
 **Steps the component performs:**
 
-1. Read the disruption event from the `disruption-confirmed` Kafka topic.
+1. Read the disruption event from the `disruption-confirmed` Kafka topic. All events on this topic have passed the eligibility gate. The agent does not re-check eligibility.
 2. Query the Amadeus Flight Offers API for alternative flights that meet the following criteria:
    - Same destination.
    - Departure within 6 hours of the original flight.
@@ -148,7 +187,7 @@ This component receives the disruption event and executes the rebooking autonomo
 | `book_hotel` | Hotel partner API | Execute hotel rebooking |
 | `submit_claim` | AmEx Benefits API | Pre-fill travel delay claim |
 
-### 3.4 Component 3 — Card Policy Engine
+### 3.5 Component 4 — Card Policy Engine
 
 **Technology:** Python, PostgreSQL, Redis
 
@@ -165,7 +204,7 @@ This component enforces card benefit rules. Every rebooking decision passes thro
 
 **Redis usage:** Policy rules are cached in Redis with a 1-hour TTL. This reduces latency during the rebooking decision step.
 
-### 3.5 Component 4 — Card Member Notification and UI
+### 3.6 Component 5 — Card Member Notification and UI
 
 **Technology:** React Native (mobile), FastAPI (backend), Firebase Cloud Messaging (push)
 
@@ -196,11 +235,23 @@ Amadeus API (flight status)
         v
 Kafka Topic: flight-status-raw
         |
-        | [Flink streaming job]
+        | [Flink streaming job — detect + classify cause]
         v
+Kafka Topic: disruption-detected
+        |
+        | [Eligibility Gate: cause check → policy check → final eligibility]
+        v
+               +-- pass --> Kafka Topic: disruption-confirmed
+               |
+               +-- fail --> Kafka Topic: disruption-ineligible
+                                      |
+                                      | [Backend stores INELIGIBLE status]
+                                      v
+                               UI shows reason (Gray state)
+
 Kafka Topic: disruption-confirmed
         |
-        | [LangChain agent consumes event]
+        | [LangChain agent consumes event — rebooks immediately]
         v
 Policy Engine (Redis cache + PostgreSQL rules)
         |
@@ -240,6 +291,7 @@ Firebase Cloud Messaging → Card Member Mobile App
 | Responsibility | Assigned To | Skill Used |
 |---|---|---|
 | Kafka topic design and Flink job | Team Member 1 | Data engineering, pipeline automation |
+| Eligibility gate (cause classification + policy checks) | Team Member 1 | Data engineering, stream processing, insurance domain knowledge |
 | LangChain agent and tool integration | Team Member 1 | Python, API integration |
 | Policy engine (Python + PostgreSQL) | Team Member 2 | Backend SDE, Python |
 | FastAPI backend and Amadeus integration | Team Member 2 | Backend SDE, API development |
@@ -266,30 +318,34 @@ The demo shows the following sequence on a live screen:
 ## 8. Success Metrics
 
 | Metric | Target |
-|---|---|
+|---|---|---|
 | Disruption detection latency | Less than 10 seconds from event to confirmed disruption |
+| Eligibility gate decision latency | Less than 2 seconds from detected disruption to pass/reject |
 | Rebooking completion time | Less than 3 minutes from detection to confirmed booking |
 | Policy enforcement accuracy | 100% — zero bookings outside card policy limits |
 | Notification delivery rate | Greater than 99% via Firebase |
 | Unclaimed benefit activation rate | 100% of eligible disruptions trigger a pre-filled claim |
+| Ineligible disruption notification | 100% of gate rejections communicated to card member with reason |
 
 ---
 
 ## 9. Risks and Mitigations
 
 | Risk | Probability | Impact | Mitigation |
-|---|---|---|---|
+|---|---|---|---|---|
 | Amadeus sandbox API rate limits | Medium | High | Cache flight search results; use mock data for high-frequency demo steps |
 | LangChain agent selects incorrect tool order | Low | Medium | Add explicit tool orchestration steps; validate tool output before next step |
 | Hotel API does not cover all partner hotels | Medium | Low | Limit demo to hotels in Amadeus hotel search coverage area |
 | Flink job state loss on restart | Low | High | Use RocksDB state backend with checkpointing to S3 every 30 seconds |
+| Most disruptions will not qualify for autonomous rebooking | High | Medium | The eligibility gate rejects disruptions with uncovered causes, short delays, or exhausted claim limits. Communicate clearly in the UI and in card member onboarding that AXIS can only rebook eligible disruptions. Track rejection rates to adjust policy thresholds over time. |
 
 ---
 
 ## 10. Submission Checklist
 
 - [x] Project description (this document)
-- [ ] Presentation (slide deck — 10 slides)
-- [ ] Architecture diagram (exported PNG)
-- [ ] Demo video (3 minutes)
-- [ ] GitHub repository link
+- [x] Architecture diagram (PNG from README Mermaid)
+- [x] Kafka topics defined: `flight-status-raw`, `disruption-detected`, `disruption-confirmed`, `disruption-ineligible`
+- [x] Eligibility gate component specified (cause classification + 3-check insurance gate)
+- [x] Demo demo video (3 minutes)
+- [x] GitHub repository link

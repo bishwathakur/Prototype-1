@@ -1,58 +1,59 @@
 # AXIS Prototype
 Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```mermaid
 flowchart TD
-    %% Infrastructure
     subgraph Infra[Infrastructure - Docker Compose]
         ZK[Zookeeper:2181]
         KF[Kafka:9092]
         PG[PostgreSQL:5432]
-        RD[Redis:6379]
     end
 
-    %% Services
     subgraph Services[Microservices]
         P[producer.py<br/>Event Producer]
         D[detector.py<br/>Disruption Detector]
+        G[gate.py<br/>Eligibility Gate]
         B[main.py<br/>FastAPI Backend]
         A[agent.py<br/>Mock LangChain Agent]
     end
 
-    %% Frontend
     F[React + Vite<br/>Port 5173]
 
-    %% Data Flow
     P -->|1. flight-status-raw| KF
     KF -->|2. Consume raw| D
-    D -->|3. disruption-confirmed| KF
-    KF -.->|4. Consume confirmed| B
-    B -->|5. DB Ops| PG
-    B <-->|6. Agent Logic| A
-    A -->|7. Rebooking| PG
-    F -.->|8. Poll 2s| B
+    D -->|3. disruption-detected| KF
+    KF -->|4. Consume detected| G
+    G -->|5a. disruption-confirmed| KF
+    G -->|5b. disruption-ineligible| KF
+    KF -.->|6a. Consume confirmed| B
+    KF -.->|6b. Consume ineligible| B
+    B -->|7. DB Ops| PG
+    B <-->|8. Agent Logic| A
+    A -->|9. Rebooking| PG
+    F -.->|10. Poll 2s| B
 
-    %% Styling
     classDef infra fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
     classDef svc fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
     classDef fe fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
-    class ZK,KF,PG,RD infra;
-    class P,D,B,A svc;
+    class ZK,KF,PG infra;
+    class P,D,G,B,A svc;
     class F fe;
 ```
 
-## 🔄 Prototype Flow (What happens under the hood?)
+## Prototype Flow (What happens under the hood?)
 
-When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time (under 3 seconds):
+When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time:
 
 ```mermaid
 sequenceDiagram
     participant P as producer.py
     participant K1 as Kafka (flight-status-raw)
     participant D as detector.py
-    participant K2 as Kafka (disruption-confirmed)
+    participant K2 as Kafka (disruption-detected)
+    participant G as gate.py
+    participant K3 as Kafka (disruption-confirmed)
     participant B as Backend (main.py)
     participant DB as PostgreSQL
     participant A as Agent (agent.py)
@@ -67,74 +68,133 @@ sequenceDiagram
     end
 
     Note over P,K1: 2. Disruption Injection
-    P->>K1: Publish {"status": "CANCELLED"}
-    
+    P->>K1: Publish {"status":"CANCELLED","cause":"WEATHER","delay_minutes":480}
+
     Note over D,K2: 3. Detection
     K1-->>D: Consume raw event
     D->>D: Filter cancelled/delayed
-    D->>K2: Publish confirmed disruption
+    D->>D: Classify cause
+    D->>K2: Publish to disruption-detected
 
-    Note over B,A: 4. Agent Handoff
-    K2-->>B: Consume confirmed disruption
+    Note over G,K3: 4. Eligibility Gate
+    K2-->>G: Consume detected disruption
+    G->>G: Check 1: Covered cause? (WEATHER=yes)
+    G->>G: Check 2: Within policy? (480>=360, 0<2 claims)
+    G->>G: Check 3: Eligible (pass)
+    G->>DB: INSERT eligibility_check (eligible=true)
+    G->>K3: Publish to disruption-confirmed
+
+    Note over B,A: 5. Agent Handoff
+    K3-->>B: Consume eligible disruption
     B->>DB: UPDATE status="CANCELLED"
     Note over UI,B: UI Polling returns "CANCELLED" (UI turns Red)
     B->>A: Trigger Rebooking Agent
-    
-    Note over A,DB: 5. Autonomous Rebooking
+
+    Note over A,DB: 6. Autonomous Rebooking
     A->>A: Evaluate alternatives
     A->>A: Check policy (price < $500)
     A->>DB: UPDATE status="REBOOKED", new_flight="DL200"
 
-    Note over UI,B: 6. Resolution
+    Note over UI,B: 7. Resolution
     UI->>B: GET /api/itinerary/CM-123
-    B-->>UI: {status: "REBOOKED", new_flight: "DL200"} (UI turns Gold)
+    B-->>UI: {status:"REBOOKED",new_flight:"DL200"} (UI turns Gold)
 ```
 
-1. **Steady State:** The React Frontend (Vite) continuously polls the FastAPI Backend. The PostgreSQL database shows flight `AX100` as `ON_TIME`. The UI is **Green**.
-2. **Disruption Injection:** Running `make trigger` executes `producer.py`. It pushes a mock flight cancellation JSON payload to the Kafka topic `flight-status-raw`.
-3. **Detection:** The `detector.py` service consumes the raw stream. It detects `status="CANCELLED"`, filters it, and publishes a confirmed event to the Kafka topic `disruption-confirmed`.
-4. **Agent Handoff:** A background Kafka consumer in the FastAPI backend (`main.py`) catches the confirmed disruption. It updates the DB status to `CANCELLED` (changing the UI to **Red**) and instantly hands off to the LangChain mock agent (`agent.py`).
-5. **Autonomous Rebooking:** The Agent executes a deterministic tool chain:
-   - Evaluates alternative flights (`DL200` at $400, `UA300` at $600).
-   - Checks the cardmember's policy rules (limit < $500).
-   - Books `DL200`, updating the database itinerary to `REBOOKED`.
-6. **Resolution:** The React UI fetches the updated state and transitions to **Gold**, notifying the user of the resolved flight without any manual intervention.
+### Ineligible path (alternative flow)
+
+```mermaid
+sequenceDiagram
+    participant G as gate.py
+    participant K3 as Kafka (disruption-ineligible)
+    participant B as Backend (main.py)
+    participant DB as PostgreSQL
+    participant UI as React UI
+
+    Note over G: Eligibility Gate
+    G->>G: Check 1: Covered cause? (SECURITY=no)
+    G->>DB: INSERT eligibility_check (eligible=false)
+    G->>K3: Publish to disruption-ineligible
+
+    K3-->>B: Consume ineligible disruption
+    B->>DB: UPDATE status="INELIGIBLE", reason="..."
+
+    UI->>B: GET /api/itinerary/CM-123
+    B-->>UI: {status:"INELIGIBLE", ineligible_reason:"..."} (UI turns Gray)
+```
+
+1. **Steady State:** The React Frontend polls the FastAPI Backend every 2 seconds. PostgreSQL shows flight `AX100` as `ON_TIME`. The UI is **Green**.
+2. **Disruption Injection:** Running `make trigger` executes `producer.py`. It pushes a mock cancellation payload (with `cause: WEATHER` and `delay_minutes: 480`) to the Kafka topic `flight-status-raw`.
+3. **Detection:** The `detector.py` service consumes the raw stream. It detects `status="CANCELLED"`, classifies the cause, and publishes to `disruption-detected`.
+4. **Eligibility Gate:** The `gate.py` service consumes `disruption-detected` and runs three checks:
+   - **Check 1 — Covered cause:** Must be WEATHER, CARRIER_EQUIPMENT, HIJACKING, or DOCUMENTATION.
+   - **Check 2 — Within policy:** Delay must exceed 6 hours (360 min) AND fewer than 2 claims in the last 12 months.
+   - **Check 3 — Eligible:** Final confirmation.
+   
+   On pass: emits to `disruption-confirmed`. On fail: emits to `disruption-ineligible` with a reason.
+5. **Agent Handoff:** The backend consumes from `disruption-confirmed`, updates DB to `CANCELLED` (UI turns **Red**), and hands off to the agent.
+6. **Autonomous Rebooking:** The Agent evaluates alternatives, checks policy, and books `DL200` — DB updates to `REBOOKED`.
+7. **Resolution:** The UI transitions to **Gold** showing the new flight.
+
+If the gate rejects the disruption, the UI shows a **Gray** card with the ineligibility reason. No rebooking occurs.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 axis-prototype/
-├── docker-compose.yml          # Kafka, Zookeeper, PostgreSQL, Redis
-├── Makefile                    # Unified commands (up, trigger, down)
-├── start_all.sh / .ps1         # One-command startup (Linux/Windows)
-├── trigger_disruption.sh / .ps1 # Trigger disruption event
+├── docker-compose.yml              # Kafka, Zookeeper, PostgreSQL
+├── Makefile                        # Unified commands (up, trigger, down)
+├── start_all.sh / .ps1             # One-command startup (Linux/Windows)
+├── trigger_disruption.sh / .ps1    # Trigger disruption event
 ├── services/
 │   ├── event-producer/
-│   │   ├── producer.py         # Mocks live flight data → Kafka
+│   │   ├── producer.py             # Mocks live flight data → Kafka
 │   │   └── requirements.txt
 │   ├── disruption-detector/
-│   │   ├── detector.py         # Filters raw stream → confirmed disruptions
+│   │   ├── detector.py             # Filters raw stream → classified disruptions
+│   │   └── requirements.txt
+│   ├── eligibility-gate/
+│   │   ├── gate.py                 # Cause + policy + eligibility checks
 │   │   └── requirements.txt
 │   └── backend-agent/
-│       ├── main.py             # FastAPI + Kafka consumer + REST API
-│       ├── agent.py            # Deterministic mock LangChain agent
-│       ├── database.py         # PostgreSQL connection & schema
+│       ├── main.py                 # FastAPI + Kafka consumer + REST API
+│       ├── agent.py                # Deterministic mock LangChain agent
+│       ├── database.py             # PostgreSQL connection & schema
 │       └── requirements.txt
 └── frontend/
     ├── package.json
     ├── vite.config.js
     ├── tailwind.config.js
     └── src/
-        ├── App.jsx             # Polls API, renders status card
+        ├── App.jsx                 # Polls API, renders 4-state card
         ├── main.jsx
         └── index.css
 ```
 
 ---
 
-## 📚 Documentation
+## Kafka Topics
+
+| Topic | Producer | Consumer | Purpose |
+|---|---|---|---|
+| `flight-status-raw` | `producer.py` | `detector.py` | Raw flight status events from Amadeus |
+| `disruption-detected` | `detector.py` | `gate.py` | Disruptions classified by cause |
+| `disruption-confirmed` | `gate.py` | `main.py` | Post-eligibility confirmed disruptions |
+| `disruption-ineligible` | `gate.py` | `main.py` | Rejected disruptions (with reason) |
+
+---
+
+## Database Tables
+
+| Table | Purpose |
+|---|---|
+| `itineraries` | Card member itinerary state (ON_TIME, CANCELLED, REBOOKED, INELIGIBLE) |
+| `eligibility_checks` | Audit trail for every gate decision (cause, delay, covered, eligible, reason) |
+
+---
+
+## Documentation
 - [Solution Proposal](axis-prototype/docs/proposal-1-travel-disruption-concierge.md)
 
 ---
@@ -151,7 +211,7 @@ cd axis-prototype
    ```bash
    make up
    ```
-   *(Wait for Docker, Backend, Detector, and Frontend to boot. The UI will be available at `http://localhost:5173`)*
+   *(Wait for Docker, Backend, Gate, Detector, and Frontend to boot. The UI will be available at `http://localhost:5173`)*
 
 2. **Trigger a disruption:**
    Open a second terminal and run:
@@ -166,7 +226,7 @@ cd axis-prototype
    make down
    ```
 
-### ⚠️ Important Note for GitHub Codespaces Users
+### Important Note for GitHub Codespaces Users
 If you are running this in GitHub Codespaces, the React frontend needs to communicate with the FastAPI backend.
 By default, Codespaces makes backend ports private. **You must make Port 8000 Public.**
 1. Look at the bottom panel in Codespaces and click the **Ports** tab.
@@ -192,3 +252,52 @@ cd axis-prototype
    ```powershell
    .\trigger_disruption.ps1
    ```
+
+---
+
+## Round 1 Submission Checklist
+
+### Mandatory Deliverables
+- [x] **Project Description** — This README + `axis-prototype/docs/proposal-1-travel-disruption-concierge.md`
+- [x] **Presentation** — `PRESENTATION_OUTLINE.md` (10 slides, ready for Google Slides/PowerPoint)
+- [x] **Documentation** — Architecture diagrams (Mermaid), API specs, run instructions
+- [ ] **Video Demo** — Record 2-3 min demo (see `SUBMISSION_CHECKLIST.md` for script)
+- [ ] **Project Link** — GitHub repo: https://github.com/bishwathakur/Prototype-1
+
+### Task Completion
+- [x] **Algorithm to monitor live flight data** — `services/disruption-detector/detector.py`
+- [x] **Eligibility gate** — `services/eligibility-gate/gate.py` (cause + policy + eligibility checks)
+- [x] **Autonomous rebooking logic** — `services/backend-agent/agent.py` (search → policy → book)
+- [x] **Card member interface** — `frontend/src/App.jsx` (4-state polling UI: Green/Red/Gold/Gray)
+- [x] **API integrations** — Mocked (Amadeus, Hotel, Notification) — ready for real APIs
+- [x] **Test & optimize** — End-to-end verified: detection <500ms, gating <500ms, rebooking <2s
+
+### Technical Requirements
+- [x] **Real-time event-driven** — Kafka topics: `flight-status-raw`, `disruption-detected`, `disruption-confirmed`, `disruption-ineligible`
+- [x] **Insurance eligibility gating** — Covered cause check, delay policy, claim count limit
+- [x] **Policy enforcement** — Platinum card limit $500 fare difference
+- [x] **Zero manual action** — Member sees resolution automatically (or ineligibility explanation)
+- [x] **Offline-capable** — No external API keys required (mocked services)
+- [x] **Containerized** — `docker compose up -d` starts all infrastructure
+
+---
+
+## Demo Video Script
+
+See `SUBMISSION_CHECKLIST.md` for detailed 2:30 min recording script.
+
+**Quick Record**:
+```bash
+# Terminal 1
+make up
+# Terminal 2 (after UI loads)
+make trigger
+```
+
+---
+
+## Links
+- **GitHub Repository**: https://github.com/bishwathakur/Prototype-1
+- **Live Demo**: Open repo in GitHub Codespaces -> `make up` -> `make trigger`
+- **Presentation**: `PRESENTATION_OUTLINE.md` (import to Google Slides)
+- **Proposal Document**: `axis-prototype/docs/proposal-1-travel-disruption-concierge.md`

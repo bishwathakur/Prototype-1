@@ -7,23 +7,18 @@ def search_alternative_flights(cancelled_flight: str):
 def check_policy(price: int):
     return price < 500
 
-def book_flight(flight: str, cm_id: str):
-    # This is handled in the rebook function but we keep this signature for logical mock
-    pass
-
 def run_agent(flight_no: str, cm_id: str):
-    # Deterministic mock agent
-    print(f"[AGENT] Finding alternatives for cancelled flight {flight_no}...")
-    time.sleep(1) # simulate think time
+    print(f"[AGENT] Eligible disruption confirmed for {flight_no}. Proceeding with rebooking...")
+    time.sleep(1)
     alts = search_alternative_flights(flight_no)
-    
+
     for alt in alts:
-        print(f"[AGENT] Checking policy for {alt['flight']} ()")
+        print(f"[AGENT] Checking policy for {alt['flight']} (${alt['price']})")
         if check_policy(alt['price']):
             print(f"[AGENT] Policy passed. Booking {alt['flight']}...")
             time.sleep(1)
             rebook_itinerary(flight_no, alt['flight'])
             print(f"[AGENT] Successfully rebooked {cm_id} onto {alt['flight']}")
             return
-            
+
     print(f"[AGENT] No flights found within policy.")

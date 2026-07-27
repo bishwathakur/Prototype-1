@@ -24,28 +24,50 @@ def init_db():
             original_flight VARCHAR(20) NOT NULL,
             status VARCHAR(20) NOT NULL,
             new_flight VARCHAR(20),
+            ineligible_reason TEXT,
             updated_at TIMESTAMP NOT NULL
         )
     """)
-    
-    # Seed data
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS eligibility_checks (
+            id SERIAL PRIMARY KEY,
+            flight_number VARCHAR(20) NOT NULL,
+            card_member_id VARCHAR(50) NOT NULL,
+            cause VARCHAR(50) NOT NULL,
+            delay_minutes INT NOT NULL DEFAULT 0,
+            claims_used_12mo INT NOT NULL DEFAULT 0,
+            covered BOOLEAN NOT NULL,
+            within_policy BOOLEAN NOT NULL,
+            eligible BOOLEAN NOT NULL,
+            reason TEXT,
+            checked_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
     cur.execute("SELECT COUNT(*) FROM itineraries WHERE card_member_id = 'CM-123'")
     if cur.fetchone()[0] == 0:
         cur.execute("""
-            INSERT INTO itineraries (id, card_member_id, original_flight, status, new_flight, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (str(uuid.uuid4()), 'CM-123', 'AX100', 'ON_TIME', None, datetime.datetime.now()))
-    
+            INSERT INTO itineraries (id, card_member_id, original_flight, status, new_flight, ineligible_reason, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (str(uuid.uuid4()), 'CM-123', 'AX100', 'ON_TIME', None, None, datetime.datetime.now()))
+
     conn.commit()
     cur.close()
     conn.close()
 
-def update_itinerary_status(flight_no, status):
+def update_itinerary_status(flight_no, status, ineligible_reason=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE itineraries SET status = %s, updated_at = %s WHERE original_flight = %s
-    """, (status, datetime.datetime.now(), flight_no))
+    if ineligible_reason:
+        cur.execute("""
+            UPDATE itineraries
+            SET status = %s, ineligible_reason = %s, updated_at = %s
+            WHERE original_flight = %s
+        """, (status, ineligible_reason, datetime.datetime.now(), flight_no))
+    else:
+        cur.execute("""
+            UPDATE itineraries SET status = %s, updated_at = %s WHERE original_flight = %s
+        """, (status, datetime.datetime.now(), flight_no))
     conn.commit()
     cur.close()
     conn.close()
