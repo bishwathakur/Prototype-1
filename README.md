@@ -4,41 +4,45 @@ Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 ## System Architecture
 
 ```mermaid
-flowchart TD
-    subgraph Infra[Infrastructure - Docker Compose]
-        ZK[Zookeeper:2181]
-        KF[Kafka:9092]
-        PG[PostgreSQL:5432]
+flowchart LR
+    subgraph S[Services]
+        P[producer.py]
+        D[disruption-detector]
+        G[eligibility-gate]
+        B[backend]
     end
 
-    subgraph Services[Microservices]
-        P[producer.py<br/>Event Producer]
-        D[detector.py<br/>Disruption Detector]
-        G[gate.py<br/>Eligibility Gate]
-        B[main.py<br/>FastAPI Backend]
-        A[agent.py<br/>Mock LangChain Agent]
+    subgraph K[Kafka Topics]
+        T1[flight-status-raw]
+        T2[disruption-detected]
+        T3[disruption-confirmed]
+        T4[disruption-ineligible]
     end
 
-    F[React + Vite<br/>Port 5173]
+    PG[(PostgreSQL)]
+    A[agent.py]
+    F[React UI<br/>Port 5173]
 
-    P -->|1. flight-status-raw| KF
-    KF -->|2. Consume raw| D
-    D -->|3. disruption-detected| KF
-    KF -->|4. Consume detected| G
-    G -->|5a. disruption-confirmed| KF
-    G -->|5b. disruption-ineligible| KF
-    KF -.->|6a. Consume confirmed| B
-    KF -.->|6b. Consume ineligible| B
-    B -->|7. DB Ops| PG
-    B <-->|8. Agent Logic| A
-    A -->|9. Rebooking| PG
-    F -.->|10. Poll 2s| B
+    P -->|publish| T1
+    T1 -->|consume| D
+    D -->|publish| T2
+    T2 -->|consume| G
+    G -->|eligible| T3
+    G -->|ineligible| T4
+    T3 -->|consume| B
+    T4 -->|consume| B
+    B -->|rebook| A
+    A -->|write| PG
+    B -->|write/read| PG
+    F -.->|poll 2s| B
 
-    classDef infra fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef svc fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
-    classDef fe fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
-    class ZK,KF,PG infra;
+    classDef svc fill:#e3f2fd,stroke:#1565c0,stroke-width:1px;
+    classDef topic fill:#fff3e0,stroke:#e65100,stroke-width:1px;
+    classDef db fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px;
+    classDef fe fill:#fce4ec,stroke:#c62828,stroke-width:1px;
     class P,D,G,B,A svc;
+    class T1,T2,T3,T4 topic;
+    class PG db;
     class F fe;
 ```
 
@@ -54,72 +58,54 @@ sequenceDiagram
     participant K2 as Kafka (disruption-detected)
     participant G as gate.py
     participant K3 as Kafka (disruption-confirmed)
+    participant K4 as Kafka (disruption-ineligible)
     participant B as Backend (main.py)
     participant DB as PostgreSQL
     participant A as Agent (agent.py)
     participant UI as React UI
 
-    Note over UI,B: 1. Steady State (Polling)
-    loop Every 2 seconds
+    Note over UI,B: 1. Steady State
+    loop Every 2s
         UI->>B: GET /api/itinerary/CM-123
-        B->>DB: SELECT * FROM itineraries
-        DB-->>B: status="ON_TIME"
-        B-->>UI: {status: "ON_TIME"} (UI turns Green)
+        B->>DB: SELECT
+        DB-->>B: status=ON_TIME
+        B-->>UI: green card
     end
 
-    Note over P,K1: 2. Disruption Injection
-    P->>K1: Publish {"status":"CANCELLED","cause":"WEATHER","delay_minutes":480}
+    Note over P,K1: 2. Disruption injection
+    P->>K1: {status:CANCELLED, cause:WEATHER, delay:480min}
 
-    Note over D,K2: 3. Detection
-    K1-->>D: Consume raw event
-    D->>D: Filter cancelled/delayed
-    D->>D: Classify cause
-    D->>K2: Publish to disruption-detected
+    Note over D,K2: 3. Detection + classification
+    K1-->>D: consume
+    D->>D: filter (CANCELLED)
+    D->>D: classify cause (WEATHER)
+    D->>K2: publish disruption-detected
 
-    Note over G,K3: 4. Eligibility Gate
-    K2-->>G: Consume detected disruption
-    G->>G: Check 1: Covered cause? (WEATHER=yes)
-    G->>G: Check 2: Within policy? (480>=360, 0<2 claims)
-    G->>G: Check 3: Eligible (pass)
+    Note over G,K3,K4: 4. Eligibility gate
+    K2-->>G: consume
+    G->>G: check 1: covered cause? yes
+    G->>G: check 2: within policy (480>360, 0<2)? yes
+    G->>G: check 3: eligible? yes
     G->>DB: INSERT eligibility_check (eligible=true)
-    G->>K3: Publish to disruption-confirmed
+    G->>K3: publish disruption-confirmed
 
-    Note over B,A: 5. Agent Handoff
-    K3-->>B: Consume eligible disruption
-    B->>DB: UPDATE status="CANCELLED"
-    Note over UI,B: UI Polling returns "CANCELLED" (UI turns Red)
-    B->>A: Trigger Rebooking Agent
+    Note over B,A: 5a. Eligible path → agent rebooks
+    K3-->>B: consume eligible disruption
+    B->>DB: UPDATE status=CANCELLED
+    B-->>UI: red card
+    B->>A: run_agent(flight, member)
+    A->>A: find alternatives
+    A->>A: check policy ($400<$500)
+    A->>DB: UPDATE status=REBOOKED, new_flight=DL200
+    B-->>UI: gold card "Rebooked on DL200"
 
-    Note over A,DB: 6. Autonomous Rebooking
-    A->>A: Evaluate alternatives
-    A->>A: Check policy (price < $500)
-    A->>DB: UPDATE status="REBOOKED", new_flight="DL200"
-
-    Note over UI,B: 7. Resolution
-    UI->>B: GET /api/itinerary/CM-123
-    B-->>UI: {status:"REBOOKED",new_flight:"DL200"} (UI turns Gold)
-```
-
-### Ineligible path (alternative flow)
-
-```mermaid
-sequenceDiagram
-    participant G as gate.py
-    participant K3 as Kafka (disruption-ineligible)
-    participant B as Backend (main.py)
-    participant DB as PostgreSQL
-    participant UI as React UI
-
-    Note over G: Eligibility Gate
-    G->>G: Check 1: Covered cause? (SECURITY=no)
+    Note over G,K4: 5b. Ineligible path (if cause was SECURITY)
+    G->>G: check 1: covered cause? no
     G->>DB: INSERT eligibility_check (eligible=false)
-    G->>K3: Publish to disruption-ineligible
-
-    K3-->>B: Consume ineligible disruption
-    B->>DB: UPDATE status="INELIGIBLE", reason="..."
-
-    UI->>B: GET /api/itinerary/CM-123
-    B-->>UI: {status:"INELIGIBLE", ineligible_reason:"..."} (UI turns Gray)
+    G->>K4: publish disruption-ineligible
+    K4-->>B: consume ineligible disruption
+    B->>DB: UPDATE status=INELIGIBLE, reason=...
+    B-->>UI: gray card "Not eligible"
 ```
 
 1. **Steady State:** The React Frontend polls the FastAPI Backend every 2 seconds. PostgreSQL shows flight `AX100` as `ON_TIME`. The UI is **Green**.
