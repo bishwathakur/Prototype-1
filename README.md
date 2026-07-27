@@ -1,4 +1,5 @@
 # AXIS Prototype
+AXIS: Autonomous eXperience and Itinerary Servicing agent.
 Autonomous Travel-Disruption Concierge prototype for CodeStreet 2026.
 
 ## System Architecture
