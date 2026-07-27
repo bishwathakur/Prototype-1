@@ -81,7 +81,7 @@ sequenceDiagram
     D->>D: classify cause (WEATHER)
     D->>K2: publish disruption-detected
 
-    Note over G,K3,K4: 4. Eligibility gate
+    Note over G,K3: 4. Eligibility gate (eligible)
     K2-->>G: consume
     G->>G: check 1: covered cause? yes
     G->>G: check 2: within policy (480>360, 0<2)? yes
