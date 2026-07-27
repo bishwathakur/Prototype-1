@@ -93,3 +93,9 @@ def health_check():
 @app.get("/api/itinerary/{cm_id}")
 def get_itin(cm_id: str):
     return get_itinerary(cm_id)
+
+@app.post("/api/trigger-disruption")
+def trigger_disruption():
+    import subprocess, sys
+    subprocess.Popen([sys.executable, "services/event-producer/producer.py"])
+    return {"status": "triggered"}

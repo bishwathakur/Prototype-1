@@ -2,6 +2,14 @@
 
 function App() {
   const [itinerary, setItinerary] = useState(null);
+  const [triggered, setTriggered] = useState(false);
+
+  const triggerDisruption = async () => {
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    await fetch(`${API_URL}/api/trigger-disruption`, { method: 'POST' });
+    setTriggered(true);
+    setTimeout(() => setTriggered(false), 3000);
+  };
 
   useEffect(() => {
     const fetchItinerary = async () => {
@@ -47,6 +55,14 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center p-8 font-sans">
       <h1 className="text-3xl font-bold text-blue-900 mb-8">American Express AXIS Concierge</h1>
+
+      <button
+        onClick={triggerDisruption}
+        disabled={triggered}
+        className="mb-6 px-6 py-3 bg-blue-900 text-white font-semibold rounded shadow hover:bg-blue-800 disabled:opacity-50"
+      >
+        {triggered ? 'Disruption Triggered!' : 'Trigger Disruption'}
+      </button>
 
       <div className={"w-full max-w-lg p-6 border-l-4 rounded shadow-md transition-colors duration-500 " + cardColor}>
         <p className="text-lg font-medium">{message}</p>
