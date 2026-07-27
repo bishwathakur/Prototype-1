@@ -11,19 +11,19 @@ def delivery_report(err, msg):
 def run_producer():
     conf = {'bootstrap.servers': 'localhost:9092'}
     producer = Producer(conf)
-    
+
     print("[PRODUCER] Waiting 10 seconds before emitting event...")
     time.sleep(10)
-    
-payload = {
-    "flight_number": "AX100",
-    "card_member_id": "CM-123",
-    "status": "CANCELLED",
-    "cause": "WEATHER",
-    "delay_minutes": 480,
-    "timestamp": "2026-07-26T10:00:00Z"
-}
-    
+
+    payload = {
+        "flight_number": "AX100",
+        "card_member_id": "CM-123",
+        "status": "CANCELLED",
+        "cause": "WEATHER",
+        "delay_minutes": 480,
+        "timestamp": "2026-07-26T10:00:00Z"
+    }
+
     print(f"[PRODUCER] Emitting event: {payload}")
     producer.produce(
         'flight-status-raw',
