@@ -318,7 +318,7 @@ The demo shows the following sequence on a live screen:
 ## 8. Success Metrics
 
 | Metric | Target |
-|---|---|---|
+|---|---|
 | Disruption detection latency | Less than 10 seconds from event to confirmed disruption |
 | Eligibility gate decision latency | Less than 2 seconds from detected disruption to pass/reject |
 | Rebooking completion time | Less than 3 minutes from detection to confirmed booking |
@@ -332,7 +332,7 @@ The demo shows the following sequence on a live screen:
 ## 9. Risks and Mitigations
 
 | Risk | Probability | Impact | Mitigation |
-|---|---|---|---|---|
+|---|---|---|---|
 | Amadeus sandbox API rate limits | Medium | High | Cache flight search results; use mock data for high-frequency demo steps |
 | LangChain agent selects incorrect tool order | Low | Medium | Add explicit tool orchestration steps; validate tool output before next step |
 | Hotel API does not cover all partner hotels | Medium | Low | Limit demo to hotels in Amadeus hotel search coverage area |
