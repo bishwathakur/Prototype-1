@@ -46,66 +46,97 @@ flowchart LR
     class F fe;
 ```
 
-## Prototype Flow (What happens under the hood?)
+## Prototype Flow
 
 When you run the prototype and trigger the disruption, the following event-driven sequence occurs in real-time:
+
+### Step 1: Steady State (UI polls every 2s)
+
+```mermaid
+sequenceDiagram
+    participant UI as React UI
+    participant B as Backend
+    participant DB as PostgreSQL
+
+    loop Every 2s
+        UI->>B: GET /api/itinerary/CM-123
+        B->>DB: SELECT status
+        DB-->>B: ON_TIME
+        B-->>UI: green card
+    end
+```
+
+### Step 2: Disruption Detection
 
 ```mermaid
 sequenceDiagram
     participant P as producer.py
-    participant K1 as Kafka (flight-status-raw)
+    participant K1 as Kafka flight-status-raw
     participant D as detector.py
-    participant K2 as Kafka (disruption-detected)
+    participant K2 as Kafka disruption-detected
+
+    P->>K1: {status:CANCELLED, cause:WEATHER, delay:480}
+    K1-->>D: consume
+    D->>D: filter CANCELLED
+    D->>D: classify cause (WEATHER)
+    D->>K2: publish
+```
+
+### Step 3: Eligibility Gate
+
+```mermaid
+sequenceDiagram
+    participant K2 as Kafka disruption-detected
     participant G as gate.py
-    participant K3 as Kafka (disruption-confirmed)
-    participant K4 as Kafka (disruption-ineligible)
-    participant B as Backend (main.py)
     participant DB as PostgreSQL
-    participant A as Agent (agent.py)
+    participant K3 as Kafka disruption-confirmed
+    participant K4 as Kafka disruption-ineligible
+
+    K2-->>G: consume
+    G->>G: check 1: covered cause? (WEATHER = yes)
+    G->>G: check 2: within policy? (480>360, 0<2 claims = yes)
+    G->>G: check 3: eligible? (yes)
+    G->>DB: INSERT eligibility_check
+    G->>K3: publish (eligible)
+
+    Note over G,K4: If cause was SECURITY
+    G->>G: check 1: covered? no
+    G->>DB: INSERT eligibility_check (fail)
+    G->>K4: publish with reason
+```
+
+### Step 4: Autonomous Rebooking (eligible path)
+
+```mermaid
+sequenceDiagram
+    participant K3 as Kafka disruption-confirmed
+    participant B as Backend
+    participant DB as PostgreSQL
+    participant A as Agent
     participant UI as React UI
 
-    Note over UI,B: 1. Steady State
-    loop Every 2s
-        UI->>B: GET /api/itinerary/CM-123
-        B->>DB: SELECT
-        DB-->>B: status=ON_TIME
-        B-->>UI: green card
-    end
-
-    Note over P,K1: 2. Disruption injection
-    P->>K1: {status:CANCELLED, cause:WEATHER, delay:480min}
-
-    Note over D,K2: 3. Detection + classification
-    K1-->>D: consume
-    D->>D: filter (CANCELLED)
-    D->>D: classify cause (WEATHER)
-    D->>K2: publish disruption-detected
-
-    Note over G,K3: 4. Eligibility gate (eligible)
-    K2-->>G: consume
-    G->>G: check 1: covered cause? yes
-    G->>G: check 2: within policy (480>360, 0<2)? yes
-    G->>G: check 3: eligible? yes
-    G->>DB: INSERT eligibility_check (eligible=true)
-    G->>K3: publish disruption-confirmed
-
-    Note over B,A: 5a. Eligible path → agent rebooks
     K3-->>B: consume eligible disruption
     B->>DB: UPDATE status=CANCELLED
-    B-->>UI: red card
+    B-->>UI: red card "Finding alternatives..."
     B->>A: run_agent(flight, member)
-    A->>A: find alternatives
-    A->>A: check policy ($400<$500)
+    A->>A: find alternatives (DL200 $400, UA300 $600)
+    A->>A: check policy ($400 < $500 limit)
     A->>DB: UPDATE status=REBOOKED, new_flight=DL200
     B-->>UI: gold card "Rebooked on DL200"
+```
 
-    Note over G,K4: 5b. Ineligible path (if cause was SECURITY)
-    G->>G: check 1: covered cause? no
-    G->>DB: INSERT eligibility_check (eligible=false)
-    G->>K4: publish disruption-ineligible
+### Step 5: Ineligible path (alternative)
+
+```mermaid
+sequenceDiagram
+    participant K4 as Kafka disruption-ineligible
+    participant B as Backend
+    participant DB as PostgreSQL
+    participant UI as React UI
+
     K4-->>B: consume ineligible disruption
-    B->>DB: UPDATE status=INELIGIBLE, reason=...
-    B-->>UI: gray card "Not eligible"
+    B->>DB: UPDATE status=INELIGIBLE
+    B-->>UI: gray card "Not eligible. Reason: ..."
 ```
 
 1. **Steady State:** The React Frontend polls the FastAPI Backend every 2 seconds. PostgreSQL shows flight `AX100` as `ON_TIME`. The UI is **Green**.
